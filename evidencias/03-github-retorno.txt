@@ -1,0 +1,2 @@
+https://cloudflare-project2.pages.dev
+https://cloudflare-project2.pages.dev/oauth/callback/github
