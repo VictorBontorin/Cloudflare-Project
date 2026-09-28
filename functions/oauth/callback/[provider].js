@@ -5,8 +5,11 @@ import {
 import { getProvider } from "../../_shared/providers.js";
 import { verifyGoogleIdToken } from "../../_shared/oidc.js";
 
-const fail = (status = 400) =>
-  reply(status, "Falha na autenticacao.", { cookies: [clearTxCookie()] });
+// VERSAO DE DIAGNOSTICO (temporaria): mostra a etapa que falhou.
+const fail = (status = 400, why = "") =>
+  reply(status, `Falha na autenticacao.${why ? " [" + why + "]" : ""}`, {
+    cookies: [clearTxCookie()],
+  });
 
 async function githubIdentity(tokens, p) {
   if (!tokens.access_token || String(tokens.token_type).toLowerCase() !== "bearer") {
@@ -20,7 +23,7 @@ async function githubIdentity(tokens, p) {
   const res = await fetch("https://api.github.com/user", {
     headers: { ...apiHeaders, Authorization: `Bearer ${tokens.access_token}` },
   });
-  if (res.status !== 200) throw new Error("user");
+  if (res.status !== 200) throw new Error("user-" + res.status);
   const user = await res.json();
   if (!Number.isInteger(user.id)) throw new Error("id");
 
@@ -34,7 +37,7 @@ async function githubIdentity(tokens, p) {
     },
     body: JSON.stringify({ access_token: tokens.access_token }),
   });
-  if (revoke.status !== 204) throw new Error("revogacao");
+  if (revoke.status !== 204) throw new Error("revogacao-" + revoke.status);
 
   return {
     issuer: "https://github.com",
@@ -52,18 +55,18 @@ export async function onRequestGet({ request, params, env }) {
     const url = new URL(request.url);
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
-    if (url.searchParams.has("error") || !code || !state) return fail();
+    if (url.searchParams.has("error") || !code || !state) return fail(400, "A-parametros");
 
     const tx = getCookie(request, TX_COOKIE);
-    if (!tx) return fail();
+    if (!tx) return fail(400, "B-sem-cookie");
 
     // localiza e apaga a transacao numa unica operacao (uso unico)
     const now = Math.floor(Date.now() / 1000);
     const row = await env.DB.prepare(
       "DELETE FROM oauth_transactions WHERE id_hash = ? AND expires_at > ? RETURNING provider, state_hash, nonce, code_verifier"
     ).bind(await sha256B64Url(tx), now).first();
-    if (!row || row.provider !== p.name) return fail();
-    if (!safeEqual(row.state_hash, await sha256B64Url(state))) return fail();
+    if (!row || row.provider !== p.name) return fail(400, "C-transacao");
+    if (!safeEqual(row.state_hash, await sha256B64Url(state))) return fail(400, "D-state");
 
     // troca do codigo (nao registrar corpo nem resposta)
     const body = new URLSearchParams({
@@ -79,7 +82,7 @@ export async function onRequestGet({ request, params, env }) {
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
       body,
     });
-    if (!tokenRes.ok) return fail(502);
+    if (!tokenRes.ok) return fail(502, "E-troca-" + tokenRes.status);
     const tokens = await tokenRes.json();
 
     const identity = p.name === "google"
@@ -99,7 +102,7 @@ export async function onRequestGet({ request, params, env }) {
       cookies: [sessionCookie(sid), clearTxCookie()],
       location: `${env.PUBLIC_BASE_URL}/`,
     });
-  } catch {
-    return fail();
+  } catch (e) {
+    return fail(400, "F-" + (e && e.message));
   }
 }
